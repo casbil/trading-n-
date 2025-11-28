@@ -1,6 +1,13 @@
-export enum TradeType {
-  BUY = 'BUY',
-  SELL = 'SELL'
+export enum SignalType {
+  CALL = 'CALL', // UP
+  PUT = 'PUT'    // DOWN
+}
+
+export enum Outcome {
+  PENDING = 'PENDING',
+  ITM = 'ITM', // In The Money (Win)
+  OTM = 'OTM', // Out Of The Money (Loss)
+  ATM = 'ATM'  // At The Money (Draw)
 }
 
 export interface PricePoint {
@@ -8,14 +15,16 @@ export interface PricePoint {
   value: number;
 }
 
-export interface TradeLog {
+export interface SignalLog {
   id: string;
-  type: TradeType;
-  price: number;
-  amount: number; // Amount of asset (e.g., BTC)
-  totalValue: number; // Total USD value of trade
-  timestamp: string;
-  profitLoss?: number; // Only relevant for SELL
+  createdAt: number; // Timestamp in ms
+  type: SignalType;
+  entryPrice: number;
+  closePrice?: number;
+  entryTime: string;
+  closeTime?: string;
+  durationSeconds: number; // e.g. 60s
+  outcome: Outcome;
 }
 
 export interface MarketAnalysis {
@@ -24,9 +33,10 @@ export interface MarketAnalysis {
   confidence: number;
 }
 
-export interface Portfolio {
-  cash: number;
-  crypto: number; // BTC holdings
-  equity: number; // Total value
-  startBalance: number;
+export interface SessionStats {
+  wins: number;
+  losses: number;
+  draws: number;
+  winRate: number;
+  totalSignals: number;
 }

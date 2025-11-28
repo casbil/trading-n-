@@ -1,5 +1,5 @@
 {
-  "name": "AutoTrade Pro (Live BTC)",
-  "description": "A professional-grade automated trading dashboard connecting to live Binance WebSocket feeds for real-time BTC/USD scalping strategies, powered by Gemini AI market analysis.",
+  "name": "PocketOption AI Signals",
+  "description": "A real-time Binary Options signal generator for Pocket Option. Connects to live Binance feeds, uses Gemini AI for trend analysis, and tracks Win/Loss ratios for CALL/PUT strategies.",
   "requestFramePermissions": []
 }

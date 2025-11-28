@@ -1,20 +1,25 @@
 import React from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { PricePoint, TradeLog, TradeType } from '../types';
+import { PricePoint, SignalLog, SignalType } from '../types';
 
 interface TradingChartProps {
   data: PricePoint[];
-  trades: TradeLog[];
+  signals: SignalLog[];
 }
 
-const TradingChart: React.FC<TradingChartProps> = ({ data, trades }) => {
+const TradingChart: React.FC<TradingChartProps> = ({ data, signals }) => {
   const lastPrice = data.length > 0 ? data[data.length - 1].value : 0;
   const isPositive = data.length > 1 ? data[data.length - 1].value >= data[data.length - 2].value : true;
 
   // Calculate domain padding for better visuals
   const minPrice = Math.min(...data.map(d => d.value));
   const maxPrice = Math.max(...data.map(d => d.value));
-  const padding = (maxPrice - minPrice) * 0.1;
+  // Dynamic padding based on volatility
+  const padding = (maxPrice - minPrice) * 0.2; // Increase padding to keep price in middle
+
+  // Filter signals to only show recent ones that match the visible time window (roughly)
+  // For simplicity, we just show the last 10 signals
+  const visibleSignals = signals.slice(-10);
 
   return (
     <div className="w-full h-[450px] bg-slate-800 rounded-xl border border-slate-700 p-4 shadow-lg flex flex-col">
@@ -46,8 +51,8 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, trades }) => {
                 domain={[minPrice - padding, maxPrice + padding]} 
                 orientation="right" 
                 tick={{fill: '#94a3b8', fontSize: 11}}
-                tickFormatter={(val) => `$${val.toLocaleString()}`}
-                width={80}
+                tickFormatter={(val) => val.toFixed(2)}
+                width={60}
             />
             <Tooltip 
                 contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f1f5f9' }}
@@ -65,19 +70,20 @@ const TradingChart: React.FC<TradingChartProps> = ({ data, trades }) => {
                 fill="url(#colorPrice)" 
                 isAnimationActive={false}
             />
-            {/* Render lines for recent trades */}
-            {trades.slice(-5).map((trade) => (
+            {/* Render lines for recent signals */}
+            {visibleSignals.map((signal) => (
                 <ReferenceLine 
-                    key={trade.id} 
-                    y={trade.price} 
-                    stroke={trade.type === TradeType.BUY ? "#10b981" : "#f43f5e"} 
+                    key={signal.id} 
+                    y={signal.entryPrice} 
+                    stroke={signal.type === SignalType.CALL ? "#10b981" : "#f43f5e"} 
                     strokeDasharray="3 3"
                     label={{ 
                         position: 'left', 
-                        value: trade.type === TradeType.BUY ? 'B' : 'S',
-                        fill: trade.type === TradeType.BUY ? "#10b981" : "#f43f5e",
+                        value: signal.type === SignalType.CALL ? 'CALL' : 'PUT',
+                        fill: signal.type === SignalType.CALL ? "#10b981" : "#f43f5e",
                         fontSize: 10,
-                        fontWeight: 'bold'
+                        fontWeight: 'bold',
+                        dy: -10
                     }} 
                 />
             ))}

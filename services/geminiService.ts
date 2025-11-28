@@ -28,22 +28,22 @@ export const analyzeMarketTrends = async (priceHistory: PricePoint[]): Promise<M
 
         const ai = new GoogleGenAI({ apiKey });
         
-        // Take the last 30 points to avoid token limits and focus on recent trends
+        // Take the last 30 points
         const recentHistory = priceHistory.slice(-30);
         const prices = recentHistory.map(p => p.value.toFixed(2)).join(', ');
         const currentPrice = recentHistory[recentHistory.length - 1]?.value || 0;
 
         const prompt = `
-            You are a senior crypto market analyst. 
-            Analyze this sequence of real-time Bitcoin (BTC/USD) prices: [${prices}].
+            You are a Binary Options AI Assistant for Pocket Option.
+            Analyze this live sequence of BTC/USD prices (1-second ticks): [${prices}].
             Current Price: $${currentPrice}.
             
-            The user is running a high-frequency scalping bot (Alternator Strategy) on this live feed.
+            The user is looking for short-term reversals or momentum for 30-second to 1-minute expirations.
             
-            Provide a JSON response with:
-            1. sentiment: "bullish", "bearish", or "neutral" based on the immediate micro-trend.
-            2. advice: A short, professional, yet witty 1-sentence trading signal or observation about the current volatility.
-            3. confidence: A number between 0 and 100 representing confidence in the trend direction.
+            Provide a JSON response:
+            1. sentiment: "bullish" (CALL bias), "bearish" (PUT bias), or "neutral".
+            2. advice: A VERY short, direct command for a binary trader (e.g., "Strong momentum, look for CALLs" or "Choppy market, avoid trading").
+            3. confidence: 0-100.
         `;
 
         const response = await ai.models.generateContent({
@@ -72,7 +72,7 @@ export const analyzeMarketTrends = async (priceHistory: PricePoint[]): Promise<M
         console.error("Gemini API Error:", error);
         return {
             sentiment: 'neutral',
-            advice: 'Market analysis unavailable (AI Connection Error).',
+            advice: 'Market analysis unavailable.',
             confidence: 0
         };
     }

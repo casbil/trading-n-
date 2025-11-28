@@ -1,40 +1,37 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { PricePoint, TradeLog, TradeType, Portfolio } from './types';
+import { PricePoint, SignalLog, SignalType, SessionStats, Outcome } from './types';
 import TradingChart from './components/TradingChart';
 import ControlPanel from './components/ControlPanel';
 import TradeList from './components/TradeList';
 import AIAnalyst from './components/AIAnalyst';
-import { Activity, Wallet, Wifi, WifiOff, Github, RefreshCw } from 'lucide-react';
+import { Radio, Wifi, WifiOff, RefreshCw, Trophy } from 'lucide-react';
 
-const INITIAL_CASH = 10000;
+// For Pocket Option, we mostly care about recent volatility
 const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws/btcusdt@miniTicker';
 
 const App: React.FC = () => {
   // --- State ---
   const [isRunning, setIsRunning] = useState(false);
-  const [intervalTime, setIntervalTime] = useState(3.0);
+  const [expiryTime, setExpiryTime] = useState(60); // 60s default
   const [isConnected, setIsConnected] = useState(false);
   
   // Market Data
   const [priceData, setPriceData] = useState<PricePoint[]>([]);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   
-  // Account State
-  const [portfolio, setPortfolio] = useState<Portfolio>({
-      cash: INITIAL_CASH,
-      crypto: 0,
-      equity: INITIAL_CASH,
-      startBalance: INITIAL_CASH
+  // App State
+  const [signals, setSignals] = useState<SignalLog[]>([]);
+  const [stats, setStats] = useState<SessionStats>({
+      wins: 0, losses: 0, draws: 0, winRate: 0, totalSignals: 0
   });
-  const [trades, setTrades] = useState<TradeLog[]>([]);
   
-  // Trading Logic State
-  const [isBuying, setIsBuying] = useState(true); // Toggles between BUY/SELL
-  const lastBuyPriceRef = useRef<number | null>(null);
+  // Signal Logic
+  const [nextSignal, setNextSignal] = useState<SignalType>(SignalType.CALL);
   
   // --- Refs ---
   const wsRef = useRef<WebSocket | null>(null);
-  const tradingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const generatorTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const checkerTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // --- WebSocket Connection ---
   useEffect(() => {
@@ -52,14 +49,12 @@ const App: React.FC = () => {
             
             setCurrentPrice(price);
             
-            // Update Price History (Throttle updates visually if needed, but here we just append)
             setPriceData(prev => {
                 const now = new Date();
                 const timeString = `${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`;
                 const newPoint = { time: timeString, value: price };
-                // Keep last 100 points
                 const newData = [...prev, newPoint];
-                if (newData.length > 150) return newData.slice(1);
+                if (newData.length > 150) return newData.slice(1); // Keep chart clean
                 return newData;
             });
         };
@@ -67,7 +62,6 @@ const App: React.FC = () => {
         ws.onclose = () => {
             console.log('Disconnected from Binance');
             setIsConnected(false);
-            // Reconnect after 3s
             setTimeout(connect, 3000);
         };
 
@@ -81,131 +75,143 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // --- Portfolio Valuation Update ---
+  // --- Check for Signal Outcomes ---
   useEffect(() => {
-     if (currentPrice > 0) {
-        setPortfolio(prev => ({
-            ...prev,
-            equity: prev.cash + (prev.crypto * currentPrice)
-        }));
-     }
-  }, [currentPrice]);
+    // Check more frequently for higher precision
+    checkerTimerRef.current = setInterval(() => {
+        if (signals.length === 0) return;
 
+        const now = Date.now();
+        let statsUpdated = false;
 
-  // --- Helper: Execute Trade ---
-  const executeTrade = useCallback((action: TradeType) => {
+        setSignals(prevSignals => {
+            return prevSignals.map(signal => {
+                // Skip if already processed
+                if (signal.outcome !== Outcome.PENDING) return signal;
+
+                const expiresAt = signal.createdAt + (signal.durationSeconds * 1000);
+                
+                if (now >= expiresAt) {
+                    statsUpdated = true;
+                    // Check outcome
+                    let outcome = Outcome.ATM;
+                    
+                    if (signal.type === SignalType.CALL) {
+                        if (currentPrice > signal.entryPrice) outcome = Outcome.ITM;
+                        else if (currentPrice < signal.entryPrice) outcome = Outcome.OTM;
+                    } else {
+                        // PUT
+                        if (currentPrice < signal.entryPrice) outcome = Outcome.ITM;
+                        else if (currentPrice > signal.entryPrice) outcome = Outcome.OTM;
+                    }
+
+                    return {
+                        ...signal,
+                        closePrice: currentPrice,
+                        closeTime: new Date().toLocaleTimeString(),
+                        outcome
+                    };
+                }
+                return signal;
+            });
+        });
+
+        // Update stats if we closed a trade
+        if (statsUpdated) {
+           updateStats();
+        }
+
+    }, 250); // Check every 250ms
+
+    return () => {
+        if (checkerTimerRef.current) clearInterval(checkerTimerRef.current);
+    }
+  }, [currentPrice, signals.length]); // Re-bind when price changes to capture latest close price accurately
+
+  const updateStats = useCallback(() => {
+      setSignals(currentSignals => {
+          const finished = currentSignals.filter(s => s.outcome !== Outcome.PENDING);
+          const wins = finished.filter(s => s.outcome === Outcome.ITM).length;
+          const losses = finished.filter(s => s.outcome === Outcome.OTM).length;
+          const draws = finished.filter(s => s.outcome === Outcome.ATM).length;
+          
+          setStats({
+              wins,
+              losses,
+              draws,
+              totalSignals: finished.length,
+              winRate: finished.length > 0 ? (wins / finished.length) * 100 : 0
+          });
+          return currentSignals;
+      });
+  }, []);
+
+  // --- Signal Generator Engine ---
+  const generateSignal = useCallback(() => {
       if (currentPrice === 0) return;
 
-      setPortfolio(current => {
-          let newCash = current.cash;
-          let newCrypto = current.crypto;
-          let tradeAmount = 0;
-          let tradeValue = 0;
-          let profitLoss = undefined;
+      const type = nextSignal;
+      const now = Date.now();
+      
+      const newSignal: SignalLog = {
+          id: `${now}-${Math.random().toString(36).substr(2, 5)}`,
+          createdAt: now,
+          type: type,
+          entryPrice: currentPrice,
+          entryTime: new Date().toLocaleTimeString(),
+          durationSeconds: expiryTime,
+          outcome: Outcome.PENDING
+      };
 
-          if (action === TradeType.BUY) {
-              // Strategy: Buy with 50% of available cash or min $1000 to keep it interesting
-              const investAmount = Math.max(1000, current.cash * 0.5); 
-              if (current.cash < investAmount) return current; // Not enough funds
-              
-              tradeValue = investAmount;
-              tradeAmount = investAmount / currentPrice;
-              
-              newCash -= tradeValue;
-              newCrypto += tradeAmount;
-              lastBuyPriceRef.current = currentPrice;
+      setSignals(prev => [...prev, newSignal]);
 
-          } else if (action === TradeType.SELL) {
-              // Strategy: Sell 100% of holdings
-              if (current.crypto <= 0) return current;
+      // Simple alternation for demo, assuming the AI Analyst (human) follows the trend
+      // In a full automated mode, we would query the AI here for the decision.
+      setNextSignal(prev => prev === SignalType.CALL ? SignalType.PUT : SignalType.CALL);
 
-              tradeAmount = current.crypto;
-              tradeValue = tradeAmount * currentPrice;
-              
-              newCash += tradeValue;
-              newCrypto = 0; // Sold all
-
-              // Calculate PnL if we have a reference
-              if (lastBuyPriceRef.current) {
-                  const buyValue = tradeAmount * lastBuyPriceRef.current;
-                  profitLoss = tradeValue - buyValue;
-              }
-              lastBuyPriceRef.current = null;
-          }
-
-          const newTrade: TradeLog = {
-              id: Math.random().toString(36).substr(2, 9),
-              type: action,
-              price: currentPrice,
-              amount: tradeAmount,
-              totalValue: tradeValue,
-              timestamp: new Date().toLocaleTimeString(),
-              profitLoss
-          };
-
-          setTrades(prev => [...prev, newTrade]);
-
-          return {
-              ...current,
-              cash: newCash,
-              crypto: newCrypto,
-              equity: newCash + (newCrypto * currentPrice)
-          };
-      });
-  }, [currentPrice]);
+  }, [currentPrice, nextSignal, expiryTime]);
 
 
-  // --- Bot Logic Engine ---
+  // --- Run Loop ---
   useEffect(() => {
     if (isRunning && isConnected) {
-      tradingTimerRef.current = setInterval(() => {
-        const action = isBuying ? TradeType.BUY : TradeType.SELL;
-        
-        executeTrade(action);
-
-        // Toggle intent for next tick
-        setIsBuying(prev => !prev);
-
-      }, intervalTime * 1000);
+      // Generate a signal periodically
+      // Randomize interval slightly to look organic
+      const intervalMs = Math.max(5000, expiryTime * 500); // Dynamic interval based on expiry
+      
+      generatorTimerRef.current = setInterval(generateSignal, intervalMs);
     } else {
-      if (tradingTimerRef.current) clearInterval(tradingTimerRef.current);
+      if (generatorTimerRef.current) clearInterval(generatorTimerRef.current);
     }
 
     return () => {
-      if (tradingTimerRef.current) clearInterval(tradingTimerRef.current);
+      if (generatorTimerRef.current) clearInterval(generatorTimerRef.current);
     };
-  }, [isRunning, intervalTime, isBuying, isConnected, executeTrade]);
+  }, [isRunning, isConnected, generateSignal, expiryTime]);
 
   // --- Reset ---
   const handleReset = () => {
     setIsRunning(false);
-    setTrades([]);
-    setIsBuying(true);
-    setPortfolio({
-        cash: INITIAL_CASH,
-        crypto: 0,
-        equity: INITIAL_CASH,
-        startBalance: INITIAL_CASH
-    });
-    lastBuyPriceRef.current = null;
+    setSignals([]);
+    setStats({ wins: 0, losses: 0, draws: 0, winRate: 0, totalSignals: 0 });
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-200 font-sans selection:bg-sky-500 selection:text-white pb-20">
+    <div className="min-h-screen bg-slate-900 text-slate-200 font-sans selection:bg-amber-500 selection:text-white pb-20">
       
       {/* Navbar */}
       <nav className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-             <div className="bg-gradient-to-r from-sky-500 to-indigo-500 p-2 rounded-lg shadow-lg shadow-sky-500/20">
-                <Activity className="text-white w-5 h-5" />
+             <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-2 rounded-lg shadow-lg shadow-amber-500/20">
+                <Radio className="text-white w-5 h-5" />
              </div>
              <div>
-                <h1 className="text-xl font-bold text-white tracking-tight">AutoTrade<span className="text-sky-400">Pro</span></h1>
+                <h1 className="text-xl font-bold text-white tracking-tight">Pocket<span className="text-amber-500">Signal</span> AI</h1>
                 <div className="flex items-center gap-2">
                     <span className="flex items-center gap-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
                         {isConnected ? (
-                            <><Wifi className="w-3 h-3 text-emerald-500" /> Live Feed Connected</>
+                            <><Wifi className="w-3 h-3 text-emerald-500" /> Binance Feed Active</>
                         ) : (
                             <><WifiOff className="w-3 h-3 text-rose-500" /> Reconnecting...</>
                         )}
@@ -218,14 +224,8 @@ const App: React.FC = () => {
                 onClick={handleReset}
                 className="flex items-center gap-2 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-md transition-colors border border-slate-700"
              >
-                <RefreshCw className="w-3 h-3" /> RESET ACCOUNT
+                <RefreshCw className="w-3 h-3" /> RESET SESSION
              </button>
-             <a 
-               href="#" 
-               className="text-slate-500 hover:text-white transition-colors"
-             >
-                <Github className="w-5 h-5" />
-             </a>
           </div>
         </div>
       </nav>
@@ -233,43 +233,31 @@ const App: React.FC = () => {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* Portfolio Stats Bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-            <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-5 rounded-xl border border-slate-700 shadow-xl flex items-center justify-between">
-                <div>
-                    <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">Total Equity</span>
-                    <div className="text-3xl font-mono text-white mt-1 font-bold">
-                        ${portfolio.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        {/* Stats Bar */}
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
+            <div className="sm:col-span-2 bg-gradient-to-br from-indigo-900 to-slate-900 p-5 rounded-xl border border-indigo-500/30 shadow-xl flex items-center justify-between relative overflow-hidden">
+                <div className="relative z-10">
+                    <span className="text-indigo-200 text-xs font-bold uppercase tracking-wider">Session Win Rate</span>
+                    <div className={`text-4xl font-mono font-bold mt-1 ${
+                        stats.winRate >= 60 ? 'text-emerald-400' : stats.winRate >= 50 ? 'text-amber-400' : 'text-rose-400'
+                    }`}>
+                        {stats.winRate.toFixed(1)}%
                     </div>
                 </div>
-                <div className={`text-right text-sm font-bold ${portfolio.equity >= portfolio.startBalance ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {portfolio.equity >= portfolio.startBalance ? '+' : ''}
-                    {((portfolio.equity - portfolio.startBalance) / portfolio.startBalance * 100).toFixed(2)}%
-                    <div className="text-[10px] text-slate-500 font-normal uppercase mt-1">Return</div>
+                <Trophy className="text-indigo-500/20 w-16 h-16 absolute right-4 top-1/2 -translate-y-1/2" />
+            </div>
+
+            <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md flex flex-col justify-center">
+                <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">ITM (Wins)</span>
+                <div className="text-2xl font-mono text-emerald-400 mt-1 flex items-baseline gap-2">
+                    {stats.wins} <span className="text-xs text-slate-600 font-normal">Signals</span>
                 </div>
             </div>
 
-            <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md flex items-center justify-between">
-                <div>
-                    <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">Available Cash</span>
-                    <div className="text-2xl font-mono text-emerald-400 mt-1">
-                        ${portfolio.cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-                </div>
-                <div className="bg-emerald-500/10 p-2 rounded-lg">
-                    <Wallet className="w-6 h-6 text-emerald-500" />
-                </div>
-            </div>
-
-            <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md flex items-center justify-between">
-                <div>
-                    <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">Bitcoin Holdings</span>
-                    <div className="text-2xl font-mono text-amber-400 mt-1">
-                        {portfolio.crypto.toFixed(5)} BTC
-                    </div>
-                </div>
-                <div className="text-right text-xs text-slate-500 mt-auto">
-                    ≈ ${(portfolio.crypto * currentPrice).toLocaleString(undefined, {maximumFractionDigits: 0})}
+            <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md flex flex-col justify-center">
+                <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">OTM (Losses)</span>
+                <div className="text-2xl font-mono text-rose-400 mt-1 flex items-baseline gap-2">
+                    {stats.losses} <span className="text-xs text-slate-600 font-normal">Signals</span>
                 </div>
             </div>
         </div>
@@ -279,35 +267,25 @@ const App: React.FC = () => {
           
           {/* Left Column: Chart (Span 2) */}
           <div className="lg:col-span-2">
-             <TradingChart data={priceData} trades={trades} />
+             {/* Pass signals to the chart to visualize entry points */}
+             <TradingChart data={priceData} signals={signals} /> 
           </div>
 
           {/* Right Column: AI Analysis */}
           <div className="lg:col-span-1 flex flex-col gap-6">
             <AIAnalyst priceData={priceData} isRunning={isRunning} />
             
-            <div className="flex-1 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
-                 <h3 className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-4">Strategy Performance</h3>
-                 <div className="space-y-4">
-                     <div className="flex justify-between items-center border-b border-slate-700 pb-2">
-                        <span className="text-sm text-slate-300">Total Trades</span>
-                        <span className="text-sm font-mono text-white">{trades.length}</span>
-                     </div>
-                     <div className="flex justify-between items-center border-b border-slate-700 pb-2">
-                        <span className="text-sm text-slate-300">Winning Trades</span>
-                        <span className="text-sm font-mono text-emerald-400">
-                            {trades.filter(t => (t.profitLoss || 0) > 0).length}
-                        </span>
-                     </div>
-                     <div className="flex justify-between items-center border-b border-slate-700 pb-2">
-                        <span className="text-sm text-slate-300">Avg Profit/Loss</span>
-                        <span className={`text-sm font-mono ${
-                            trades.reduce((acc, t) => acc + (t.profitLoss || 0), 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                        }`}>
-                           ${trades.length > 0 ? (trades.reduce((acc, t) => acc + (t.profitLoss || 0), 0) / trades.filter(t => t.type === TradeType.SELL).length || 0).toFixed(2) : '0.00'}
-                        </span>
-                     </div>
-                 </div>
+            <div className="bg-amber-900/10 p-4 rounded-xl border border-amber-900/30">
+                <h4 className="text-amber-500 font-bold text-sm mb-2">Platform Note</h4>
+                <p className="text-xs text-amber-200/60 leading-relaxed">
+                    This assistant generates signals for Pocket Option. 
+                    <br/><br/>
+                    1. Set expiration on Pocket Option to <strong>{expiryTime < 60 ? `${expiryTime}s` : `M${expiryTime/60}`}</strong>.
+                    <br/>
+                    2. Wait for the <strong>CALL</strong> or <strong>PUT</strong> signal below.
+                    <br/>
+                    3. Execute manually on the platform.
+                </p>
             </div>
           </div>
         </div>
@@ -318,13 +296,13 @@ const App: React.FC = () => {
                 <ControlPanel 
                     isRunning={isRunning} 
                     onToggle={() => setIsRunning(!isRunning)} 
-                    interval={intervalTime}
-                    onIntervalChange={setIntervalTime}
-                    nextAction={isBuying ? 'BUY' : 'SELL'}
+                    expiryTime={expiryTime}
+                    onExpiryChange={setExpiryTime}
+                    nextSignal={nextSignal}
                 />
             </div>
             <div className="md:col-span-8 h-full">
-                <TradeList trades={trades} />
+                <TradeList signals={signals} />
             </div>
         </div>
       </main>
