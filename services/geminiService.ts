@@ -31,15 +31,19 @@ export const analyzeMarketTrends = async (priceHistory: PricePoint[]): Promise<M
         // Take the last 30 points to avoid token limits and focus on recent trends
         const recentHistory = priceHistory.slice(-30);
         const prices = recentHistory.map(p => p.value.toFixed(2)).join(', ');
+        const currentPrice = recentHistory[recentHistory.length - 1]?.value || 0;
 
         const prompt = `
-            You are a high-frequency trading analyst. Analyze this sequence of stock prices: [${prices}].
-            The strategy currently running is a simple alternator (Buy then Sell every X seconds).
+            You are a senior crypto market analyst. 
+            Analyze this sequence of real-time Bitcoin (BTC/USD) prices: [${prices}].
+            Current Price: $${currentPrice}.
+            
+            The user is running a high-frequency scalping bot (Alternator Strategy) on this live feed.
             
             Provide a JSON response with:
-            1. sentiment: "bullish", "bearish", or "neutral" based on the trend.
-            2. advice: A short, witty 1-sentence comment on whether the "Alternator Bot" is likely to make money in this specific micro-trend.
-            3. confidence: A number between 0 and 100 representing confidence in the trend.
+            1. sentiment: "bullish", "bearish", or "neutral" based on the immediate micro-trend.
+            2. advice: A short, professional, yet witty 1-sentence trading signal or observation about the current volatility.
+            3. confidence: A number between 0 and 100 representing confidence in the trend direction.
         `;
 
         const response = await ai.models.generateContent({
