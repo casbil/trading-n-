@@ -1,0 +1,5 @@
+{
+  "name": "AutoTrade Visualizer",
+  "description": "A simulation of a mechanical high-frequency trading bot that alternates between Buy and Sell orders on a set interval, visualized against a live simulated market data feed with Gemini-powered market analysis.",
+  "requestFramePermissions": []
+}
